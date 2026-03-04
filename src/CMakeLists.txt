@@ -1,7 +1,7 @@
-cmake_minimum_required(VERSION 3.15) # 建議至少 3.15 以支援更好的 C++20 處理
+cmake_minimum_required(VERSION 3.15) 
 project(OpenStint LANGUAGES C CXX)
 
-# 解決你之前遇到的 CMP0003 警告
+
 cmake_policy(SET CMP0003 NEW)
 
 # Use C++20 (or newer if needed)
