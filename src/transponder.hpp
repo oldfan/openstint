@@ -24,10 +24,7 @@ int decode_rc4(const uint8_t *softbits, uint32_t *transponder_id);
 inline constexpr TransponderProps TRANSPONDER_PROPERTIES[] = {
     {0xf9a8, 80, "OPN"},
     {0x51e4, 80, "RC3"},
-    {0x6969, 16, "RC4"} 
-    //{0x7920, 80, "RC4"} //30
-    //{0x9617, 80, "RC4"}   //1
-    //{0x7916, 16, "RC4"}
+    {0x5406, 16, "RC4"} 
 };
 
 constexpr TransponderProps transponder_props(TransponderType t) {
