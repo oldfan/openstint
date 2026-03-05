@@ -165,7 +165,7 @@ std::optional<TransponderType> FrameDetector::process_baseband(const std::comple
     if (buffers[idx].match_preamble(p_legacy) > threshold) {
         return TransponderType::Legacy;
     }    
-    if (buffers[idx].match_preamble(p_rc4) > 0.5) {       
+    if (buffers[idx].match_preamble(p_rc4) > threshold) {       
         return TransponderType::RC4;
     }
     
