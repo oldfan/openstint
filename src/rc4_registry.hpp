@@ -15,7 +15,7 @@ public:
     
 
 private:
-    void init_db(); // 用於檢查並建立資料表與設定起始值的私有函式
+    void init_db(); 
     void sort_by_rc4_ids();
     uint64_t save_to_db();
     uint64_t find_id_by_transponder(uint64_t target_id);
