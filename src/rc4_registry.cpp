@@ -1,0 +1,170 @@
+#include "rc4_registry.hpp"
+#include <algorithm>
+#include <sqlite3.h>
+#include <iostream>
+#include <sstream>
+#include <string>
+std::vector<std::vector<uint32_t>> rc4_ids(1000, std::vector<uint32_t>(2, 1));
+
+// Global registry instance
+RC4Registry g_rc4_registry;
+RC4Registry::RC4Registry() {
+    init_db();
+}
+void RC4Registry::init_db() {
+    sqlite3* db;
+    char* err_msg = 0;
+
+    // 1. 打開資料庫（若不存在會自動建立檔案）
+    int rc = sqlite3_open("openstint_rc4.db", &db);
+    if (rc != SQLITE_OK) {
+        std::cerr << "無法開啟資料庫進行初始化: " << sqlite3_errmsg(db) << std::endl;
+        return;
+    }
+
+    // 2. 建立資料表並設定 AUTOINCREMENT 起始值
+    // 使用批次指令：建立表 -> 嘗試插入起始值
+    const char* init_sql = 
+        "CREATE TABLE IF NOT EXISTS transponder_rc4 ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  rc4_ids TEXT,"
+        "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+        ");"
+        "INSERT OR IGNORE INTO sqlite_sequence (name, seq) VALUES ('transponder_rc4', 999999);";
+
+    rc = sqlite3_exec(db, init_sql, 0, 0, &err_msg);
+    
+    if (rc != SQLITE_OK) {
+        std::cerr << "初始化資料表失敗: " << err_msg << std::endl;
+        sqlite3_free(err_msg);
+    } else {
+        // 只有在 Debug 模式或第一次執行時才顯示
+        // std::cout << "資料庫初始化檢查完成。" << std::endl;
+    }
+
+    sqlite3_close(db);
+}
+uint64_t RC4Registry::save_to_db() {  
+    sort_by_rc4_ids();
+    if(rc4_ids[0][1]<150){ //取得ID樣本數太少
+        clear();
+        return 0;
+    }
+    std::stringstream ss;
+    int limit = std::min(this->rc4_i, 30);
+    for (int i = 0; i < limit; i++) {
+        ss << rc4_ids[i][0]; // 取得 ID
+        if (i < limit - 1) {
+            ss << ","; // 補上逗號
+        }
+    }
+    std::string final_ids = ss.str();
+
+    if (final_ids.empty()) return 0;
+    uint64_t new_id=0;
+    // 3. 寫入資料庫
+    sqlite3* db;
+    if (sqlite3_open("openstint_rc4.db", &db) == SQLITE_OK) {
+        std::string sql = "INSERT INTO transponder_rc4 (rc4_ids) VALUES ('" + final_ids + "');";
+        char* err_msg = 0;
+        int rc = sqlite3_exec(db, sql.c_str(), 0, 0, &err_msg);
+        
+        if (rc == SQLITE_OK) {
+            // 2. 關鍵步驟：取得剛剛產生的 AUTOINCREMENT ID
+            new_id = sqlite3_last_insert_rowid(db);
+            std::cout << "資料存入成功，取得新增 ID: " << new_id << std::endl;
+        } else {
+            fprintf(stderr, "SQL 錯誤: %s\n", err_msg);
+            sqlite3_free(err_msg);            
+        }
+        sqlite3_close(db);
+    }
+    return new_id;
+}
+uint64_t RC4Registry::find_id_by_transponder(uint64_t target_id) {
+    sqlite3* db;
+    sqlite3_stmt* stmt;
+    uint64_t found_db_id = 0;
+
+    // 1. 打開資料庫
+    if (sqlite3_open("openstint_rc4.db", &db) != SQLITE_OK) {
+        return 0;
+    }
+
+    // 2. 使用精確的比對邏輯：
+    // 將 rc4_ids 前後補上逗號，搜尋時也前後補上逗號，確保比對的是完整數字
+    // 例如：搜尋 ",3157844207," 是否存在於 ",123,3157844207,456," 之中
+    std::string sql = "SELECT id FROM transponder_rc4 WHERE ',' || rc4_ids || ',' LIKE ? LIMIT 1;";
+
+    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, 0) == SQLITE_OK) {
+        // 將 uint64_t 轉換為字串並包裝成 LIKE 參數
+        std::string search_str = "%," + std::to_string(target_id) + ",%";
+        sqlite3_bind_text(stmt, 1, search_str.c_str(), -1, SQLITE_TRANSIENT);
+
+        // 3. 執行查詢
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            found_db_id = sqlite3_column_int64(stmt, 0);
+        }
+    } else {
+        std::cerr << "SQL Prepare 錯誤: " << sqlite3_errmsg(db) << std::endl;
+    }
+
+    // 4. 清理與關閉
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
+
+    return found_db_id;
+}
+uint32_t RC4Registry::register_transponder(uint64_t timestamp,uint32_t transponder_id) {
+    bool t=true;
+    uint64_t id=find_id_by_transponder(transponder_id);
+    if(id != 0){
+        clear();
+        return id; 
+    }
+    if(pre_time != 0 && timestamp-pre_time > 1000){
+        clear();
+        return 0;
+    }     
+    for(int i=0;i <= rc4_i;i++){
+        if(rc4_ids[i][0] == transponder_id){
+            rc4_ids[i][1]++;
+            t=false;
+            break;
+        }
+    }
+    if(t){                
+        if(rc4_i == 0)start_time=timestamp;
+        rc4_ids[rc4_i][0]=transponder_id;
+        if(rc4_i < 999) rc4_i++;
+    }
+    if(pre_time !=0 && timestamp - start_time > 15000){
+        save_to_db();
+        clear();
+        return transponder_id;
+    }
+    pre_time=timestamp;
+    return 0;
+
+}
+void RC4Registry::clear() {
+    rc4 = false;    
+    if(rc4_i > 0) {
+        for (int i = 0; i < rc4_i; i++) {
+            rc4_ids[i][0] = 0;
+            rc4_ids[i][1] = 1;
+        }
+    }
+    rc4_i = 0;
+    pre_time=0;
+}
+void RC4Registry::sort_by_rc4_ids() {
+    // rc4_i 是目前登記的有效 ID 數量
+    if (rc4_i < 2) return; 
+
+    // 針對 rc4_ids[i][1] (累加次數) 進行降序排序
+    std::sort(rc4_ids.begin(), rc4_ids.begin() + rc4_i, 
+        [](const std::vector<uint32_t>& a, const std::vector<uint32_t>& b) {
+            return a[1] > b[1]; // 大的在前
+        });
+}
