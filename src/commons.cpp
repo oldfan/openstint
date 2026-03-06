@@ -15,7 +15,7 @@
 #include "passing.hpp"
 #include "counters.hpp"
 #include "timebase.hpp"
-
+#include "rc4_registry.hpp"
 
 static int zmq_port = DEFAULT_ZEROMQ_PORT;
 static zmq::context_t* zmq_context = nullptr;
