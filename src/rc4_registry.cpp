@@ -43,7 +43,7 @@ void RC4Registry::init_db() {
 }
 uint64_t RC4Registry::save_to_db() {  
     sort_by_rc4_ids();
-    if(rc4_ids[0][1]<150){ 
+    if(rc4_ids[0][1]<200){ 
         clear();
         return 0;
     }
