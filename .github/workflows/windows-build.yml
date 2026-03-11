@@ -28,6 +28,7 @@ jobs:
           mingw-w64-x86_64-cppzmq
           mingw-w64-x86_64-hackrf
           mingw-w64-x86_64-rtl-sdr
+          mingw-w64-x86_64-sqlite3
           git
           make
           autoconf
