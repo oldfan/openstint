@@ -25,10 +25,22 @@ void RC4Registry::init_db() {
     const char* init_sql = 
         "CREATE TABLE IF NOT EXISTS transponder_rc4 ("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  transponder_id INTEGER UNIQUE,"
         "  rc4_ids TEXT,"
         "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
         ");"
-        "INSERT OR IGNORE INTO sqlite_sequence (name, seq) VALUES ('transponder_rc4', 999999);";
+        
+        // 設定起始值 (下一筆從 1,000,000 開始)
+        "INSERT OR IGNORE INTO sqlite_sequence (name, seq) VALUES ('transponder_rc4', 999999);"
+
+        // 當新增資料後，自動將 id 填入 transponder_id
+        "CREATE TRIGGER IF NOT EXISTS sync_transponder_id "
+        "AFTER INSERT ON transponder_rc4 "
+        "FOR EACH ROW "
+        "WHEN NEW.transponder_id IS NULL " 
+        "BEGIN "
+        "  UPDATE transponder_rc4 SET transponder_id = NEW.id WHERE id = NEW.id; "
+        "END;";
 
     rc = sqlite3_exec(db, init_sql, 0, 0, &err_msg);
     
@@ -89,7 +101,7 @@ uint64_t RC4Registry::find_id_by_transponder(uint64_t target_id) {
         // 2. Use precise comparison logic:
     // Pad rc4_ids with commas before and after it, and also pad the search with commas before and after it to ensure that complete numbers are compared.
     // For example: search if ",3157844207," exists within ",123,3157844207,456,"
-    std::string sql = "SELECT id FROM transponder_rc4 WHERE ',' || rc4_ids || ',' LIKE ? LIMIT 1;";
+    std::string sql = "SELECT transponder_id FROM transponder_rc4 WHERE ',' || rc4_ids || ',' LIKE ? LIMIT 1;";
 
     if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, 0) == SQLITE_OK) {
         // Convert uint64_t to a string and wrap it as a LIKE parameter

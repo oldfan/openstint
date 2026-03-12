@@ -1,9 +1,3 @@
-cmake_minimum_required(VERSION 3.15) 
-project(OpenStint LANGUAGES C CXX)
-
-
-cmake_policy(SET CMP0003 NEW)
-
 # Use C++20 (or newer if needed)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -73,7 +67,6 @@ if(USE_RTLSDR)
       ${FEC_LIB}
       ${SQLITE3_LIB}
       cppzmq
-      fmt
       m
     )
 endif()

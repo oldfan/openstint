@@ -20,8 +20,10 @@
 static int zmq_port = DEFAULT_ZEROMQ_PORT;
 static zmq::context_t* zmq_context = nullptr;
 static zmq::socket_t* publisher = nullptr;
+enum FrameParseMode { FRAME_SEEK, FRAME_FOUND };
+static inline FrameParseMode frame_parse_mode = FRAME_SEEK;
 
-static enum FrameParseMode { FRAME_SEEK, FRAME_FOUND } frame_parse_mode = FRAME_SEEK;
+//static enum FrameParseMode { FRAME_SEEK, FRAME_FOUND } frame_parse_mode = FRAME_SEEK;
 static FrameDetector frame_detector(0.84f - 0.01f*SAMPLES_PER_SYMBOL);
 static SymbolReader symbol_reader;
 static Frame frame;
