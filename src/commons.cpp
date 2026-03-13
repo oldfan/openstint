@@ -2,7 +2,7 @@
 
 #include <cstdlib>
 #include <complex>
-#include <format>
+#include <fmt/format.h>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -139,7 +139,7 @@ void init_commons() {
     
     //  Prepare our context and publisher
     std::string zmq_address;
-    std::format_to(std::back_inserter(zmq_address), "tcp://*:{}", zmq_port);
+    fmt::format_to(std::back_inserter(zmq_address), "tcp://*:{}", zmq_port);
     zmq_context = new zmq::context_t(1);
     publisher = new zmq::socket_t(*zmq_context, zmq::socket_type::pub);
     publisher->bind(zmq_address);
@@ -151,7 +151,7 @@ void report_detections() {
 
     // report status once a second
     if (rx_stats.reporting_due(now)) {
-        const std::string report = std::format("S {} {}", now, rx_stats.to_string());
+        const std::string report = fmt::format("S {} {}", now, rx_stats.to_string());
         rx_stats.reset(now);
 
         std::cout << report << std::endl;
@@ -160,7 +160,7 @@ void report_detections() {
     
     std::vector<TimeSync> timesyncs = passing_detector.identify_timesyncs(500ul);
     for (const auto& time_sync : timesyncs) {
-        const std::string report = std::format("T {} {} {} {}",
+        const std::string report = fmt::format("T {} {} {} {}",
             time_sync.timestamp,
             transponder_props(time_sync.transponder_type).prefix, // always openstint
             time_sync.transponder_id,
@@ -173,7 +173,7 @@ void report_detections() {
 
     std::vector<Passing> passings = passing_detector.identify_passings(now - 1000ul);
     for (const auto& passing : passings) {
-        const std::string report = std::format("P {} {} {} {:.2f} {} {}",
+        const std::string report = fmt::format("P {} {} {} {:.2f} {} {}",
             passing.timestamp,
             transponder_props(passing.transponder_type).prefix,
             passing.transponder_id,

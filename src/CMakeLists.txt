@@ -34,7 +34,8 @@ find_library(FEC_LIB REQUIRED NAMES fec)
 
 find_package(cppzmq REQUIRED)
 find_library(SQLITE3_LIB NAMES sqlite3 REQUIRED)
-
+find_library(FFTW3F_LIB NAMES fftw3f REQUIRED)
+find_library(FFTW3_LIB NAMES fftw3 REQUIRED)
 if(USE_HACKRF)
     find_path(HACKRF_INCLUDE_DIR NAMES libhackrf/hackrf.h)
     find_library(HACKRF_LIB REQUIRED NAMES hackrf)
@@ -49,7 +50,10 @@ if(USE_HACKRF)
       ${HACKRF_LIB}
       ${FEC_LIB}
       ${SQLITE3_LIB}
+      ${FFTW3F_LIB}   # fftw 在後，供 liquid 調用
+      ${FFTW3_LIB}
       cppzmq
+      fmt
       m
     )
 endif()
@@ -69,6 +73,7 @@ if(USE_RTLSDR)
       ${FEC_LIB}
       ${SQLITE3_LIB}
       cppzmq
+      fmt
       m
     )
 endif()
