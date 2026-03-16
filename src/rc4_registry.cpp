@@ -8,11 +8,14 @@ std::vector<std::vector<uint32_t>> rc4_ids(1000, std::vector<uint32_t>(2, 1));
 
 // Global registry instance
 RC4Registry g_rc4_registry;
+sqlite3* db;
+sqlite3_stmt* stmt;
+
 RC4Registry::RC4Registry() {
     init_db();
 }
 void RC4Registry::init_db() {
-    sqlite3* db;
+    
     char* err_msg = 0;   
     int rc = sqlite3_open("openstint_rc4.db", &db);
     if (rc != SQLITE_OK) {
@@ -50,8 +53,10 @@ void RC4Registry::init_db() {
     } else {
         
     }
-
-    sqlite3_close(db);
+    sqlite3_open("openstint_rc4.db", &db);
+    std::string sql = "SELECT transponder_id FROM transponder_rc4 WHERE  rc4_ids  LIKE ? LIMIT 1;";
+    sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, 0);
+   
 }
 uint64_t RC4Registry::save_to_db() {  
     sort_by_rc4_ids();
@@ -71,8 +76,7 @@ uint64_t RC4Registry::save_to_db() {
 
     if (final_ids.empty()) return 0;
     uint64_t new_id=0;  
-    sqlite3* db;
-    if (sqlite3_open("openstint_rc4.db", &db) == SQLITE_OK) {
+   
         std::string sql = "INSERT INTO transponder_rc4 (rc4_ids) VALUES ('" + final_ids + "');";
         char* err_msg = 0;
         int rc = sqlite3_exec(db, sql.c_str(), 0, 0, &err_msg);
@@ -84,41 +88,30 @@ uint64_t RC4Registry::save_to_db() {
             fprintf(stderr, "SQL Error: %s\n", err_msg);
             sqlite3_free(err_msg);            
         }
-        sqlite3_close(db);
-    }
+      
+    
     return new_id;
 }
+
 uint64_t RC4Registry::find_id_by_transponder(uint64_t target_id) {
-    sqlite3* db;
-    sqlite3_stmt* stmt;
+   
+    if (lookup_cache.count(target_id)) {
+        return lookup_cache[target_id];
+    }
     uint64_t found_db_id = 0;
 
-    
-    if (sqlite3_open("openstint_rc4.db", &db) != SQLITE_OK) {
-        return 0;
-    }
-
-        // 2. Use precise comparison logic:
-    // Pad rc4_ids with commas before and after it, and also pad the search with commas before and after it to ensure that complete numbers are compared.
-    // For example: search if ",3157844207," exists within ",123,3157844207,456,"
-    std::string sql = "SELECT transponder_id FROM transponder_rc4 WHERE ',' || rc4_ids || ',' LIKE ? LIMIT 1;";
-
-    if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, 0) == SQLITE_OK) {
-        // Convert uint64_t to a string and wrap it as a LIKE parameter
-        std::string search_str = "%," + std::to_string(target_id) + ",%";
+        std::string search_str = "%" + std::to_string(target_id) + "%";
         sqlite3_bind_text(stmt, 1, search_str.c_str(), -1, SQLITE_TRANSIENT);
 
         
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             found_db_id = sqlite3_column_int64(stmt, 0);
+            lookup_cache[target_id] = found_db_id;
         }
-    } else {
-        std::cerr << "SQL Prepare error: " << sqlite3_errmsg(db) << std::endl;
-    }
+   
 
-    // 4. 清理與關閉
-    sqlite3_finalize(stmt);
-    sqlite3_close(db);
+   
+  
 
     return found_db_id;
 }
