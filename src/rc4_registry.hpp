@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <vector>
 #include <string>
+#include <unordered_map>
 
 
 class RC4Registry {
@@ -19,7 +20,6 @@ private:
     void sort_by_rc4_ids();
     uint64_t save_to_db();
     uint64_t find_id_by_transponder(uint64_t target_id);
+    std::unordered_map<uint64_t, uint64_t> lookup_cache;
 };
 extern RC4Registry g_rc4_registry;
-
-
