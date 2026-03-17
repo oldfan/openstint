@@ -34,10 +34,10 @@ void RC4Registry::init_db() {
         "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
         ");"
         
-        // 設定起始值 (下一筆從 1,000,000 開始)
+        
         "INSERT OR IGNORE INTO sqlite_sequence (name, seq) VALUES ('transponder_rc4', 999999);"
 
-        // 當新增資料後，自動將 id 填入 transponder_id
+  
         "CREATE TRIGGER IF NOT EXISTS sync_transponder_id "
         "AFTER INSERT ON transponder_rc4 "
         "FOR EACH ROW "
@@ -92,21 +92,21 @@ uint64_t RC4Registry::save_to_db() {
     return new_id;
 }
 
-// 定義一個結構來接收結果
+
 struct QueryResult {
     std::string transponder_id;
     bool found = false;
 };
 
-// 回呼函數 (SQLite 每查到一筆資料就會跳進來這裡一次)
+
 int my_callback(void* data, int argc, char** argv, char** azColName) {
     (void)azColName;
     QueryResult* res = static_cast<QueryResult*>(data);
     if (argc > 0 && argv[0]) {
-        res->transponder_id = argv[0]; // 取得第一欄 (transponder_id) 的內容
+        res->transponder_id = argv[0]; 
         res->found = true;
     }
-    return 0; // 回傳 0 繼續查詢，回傳非 0 則停止查詢
+    return 0; 
 }
 uint64_t RC4Registry::find_id_by_transponder(uint64_t target_id) {
     
