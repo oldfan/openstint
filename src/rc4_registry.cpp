@@ -33,11 +33,7 @@ void RC4Registry::init_db() {
         "  rc4_ids TEXT,"
         "  created_at DATETIME DEFAULT CURRENT_TIMESTAMP"
         ");"
-        
-        // 設定起始值 (下一筆從 1,000,000 開始)
-        "INSERT OR IGNORE INTO sqlite_sequence (name, seq) VALUES ('transponder_rc4', 999999);"
-
-        // 當新增資料後，自動將 id 填入 transponder_id
+        "INSERT OR IGNORE INTO sqlite_sequence (name, seq) VALUES ('transponder_rc4', 999999);"       
         "CREATE TRIGGER IF NOT EXISTS sync_transponder_id "
         "AFTER INSERT ON transponder_rc4 "
         "FOR EACH ROW "
@@ -92,7 +88,7 @@ uint64_t RC4Registry::save_to_db() {
     return new_id;
 }
 
-// 定義一個結構來接收結果
+
 struct QueryResult {
     std::string transponder_id;
     bool found = false;
