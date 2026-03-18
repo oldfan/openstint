@@ -5,6 +5,7 @@
 #include <cmath>
 
 #include "passing.hpp"
+#include <iostream>
 
 #define REPORT_HIT_LIMIT 2
 #define TRANSPONDER_DETECTION_MSG_LIMIT (1<<12)
@@ -239,14 +240,21 @@ PassingPoint weigthed_passing(const std::deque<Detection>& detections, float max
 
     float weighted_sum = 0.0f;
     float weight_total = 0.0f;
+
+    // in "system time" mode, milisecond-resolution epock is used
+    // ms-resolution epoch is too large for floating point, and gets truncated
+    // if the offset is removed, we can keep using a weighted average
+    uint64_t offset = detections.front().timestamp;
+
     for (const auto& d : detections) {
         if (d.rssi >= rssi_threshold) {
-            weighted_sum += static_cast<float>(d.timestamp) * d.rssi;
-            weight_total += d.rssi;
+            auto p = std::pow(10.0, d.rssi/20.0);
+            weighted_sum += static_cast<float>(d.timestamp-offset) * p;
+            weight_total += p;
         }
     }
 
-    uint64_t weighted_timestamp = static_cast<uint64_t>(weighted_sum / weight_total);
+    uint64_t weighted_timestamp = static_cast<uint64_t>(weighted_sum / weight_total) + offset;
     return {weighted_timestamp, max_rssi, 0};
 }
 

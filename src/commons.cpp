@@ -68,7 +68,10 @@ bool process_frame(Frame* frame) {
 }
 
 void detect_frames(const std::complex<int8_t>* samples, std::size_t sample_count) {
-    uint64_t buffer_timestamp = timebase.now();
+    const int32_t dropped_buff_cnt = timebase.advance_clock(sample_count);
+    const uint64_t buffer_ts = timebase.get_timecode() - sample_count;
+    rx_stats.register_dropped_buffers(dropped_buff_cnt);
+
     bool frame_detected = false;
     for (uint32_t idx=0; (idx+SAMPLES_PER_SYMBOL)<=sample_count; idx+=SAMPLES_PER_SYMBOL) {
         if (frame_parse_mode == FRAME_SEEK) {
@@ -76,8 +79,7 @@ void detect_frames(const std::complex<int8_t>* samples, std::size_t sample_count
             if (detected) {
                 frame_parse_mode = FRAME_FOUND;
                 frame_detected = true; // do not use this buffer for noisefloor calculation
-                uint64_t timestamp = buffer_timestamp + (1000 * idx) / SAMPLE_RATE;
-                frame = Frame(detected.value(), timestamp);
+                frame = Frame(detected.value(), timebase.to_timestamp(buffer_ts + idx));
                 symbol_reader.read_preamble(&frame, frame_detector.dc_offset(), samples, idx+SAMPLES_PER_SYMBOL);
             }
         } else if (frame_parse_mode == FRAME_FOUND) {
@@ -134,18 +136,22 @@ void init_commons() {
 }
 
 void report_detections() {
-    const auto now = timebase.now();
+    const auto now_tc = timebase.get_timecode();
+    const auto now_ts = timebase.to_timestamp(now_tc);
 
     // report status once a second
-    if (rx_stats.reporting_due(now)) {
-        const std::string report = std::format("S {} {}", now, rx_stats.to_string());
-        rx_stats.reset(now);
+    if (rx_stats.reporting_due(now_ts)) {
+        const std::string report = std::format("S {} {}",
+            now_ts,
+            rx_stats.to_string()
+        );
+        rx_stats.reset(now_ts);
 
         std::cout << report << std::endl;
         publisher->send(zmq::buffer(report), zmq::send_flags::none);
     }
     
-    std::vector<TimeSync> timesyncs = passing_detector.identify_timesyncs(500ul);
+    std::vector<TimeSync> timesyncs = passing_detector.identify_timesyncs(500l);
     for (const auto& time_sync : timesyncs) {
         const std::string report = std::format("T {} {} {} {}",
             time_sync.timestamp,
@@ -158,7 +164,7 @@ void report_detections() {
         publisher->send(zmq::buffer(report), zmq::send_flags::none);
     }
 
-    std::vector<Passing> passings = passing_detector.identify_passings(now - 250ul);
+    std::vector<Passing> passings = passing_detector.identify_passings(now_ts - 250l);
     for (const auto& passing : passings) {
         const std::string report = std::format("P {} {} {} {:.2f} {} {}",
             passing.timestamp,
