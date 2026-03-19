@@ -94,15 +94,15 @@ struct QueryResult {
     bool found = false;
 };
 
-// 回呼函數 (SQLite 每查到一筆資料就會跳進來這裡一次)
+
 int my_callback(void* data, int argc, char** argv, char** azColName) {
     (void)azColName;
     QueryResult* res = static_cast<QueryResult*>(data);
     if (argc > 0 && argv[0]) {
-        res->transponder_id = argv[0]; // 取得第一欄 (transponder_id) 的內容
+        res->transponder_id = argv[0]; 
         res->found = true;
     }
-    return 0; // 回傳 0 繼續查詢，回傳非 0 則停止查詢
+    return 0; 
 }
 uint64_t RC4Registry::find_id_by_transponder(uint64_t target_id) {
     
@@ -116,17 +116,7 @@ uint64_t RC4Registry::find_id_by_transponder(uint64_t target_id) {
     if (rc == SQLITE_OK && result.transponder_id !="") {
         found_db_id = std::stoull(result.transponder_id);
     }
-    /*
-    std::string search_str = "%" + std::to_string(target_id) + "%";
-    sqlite3_bind_text(stmt, 1, search_str.c_str(), -1, SQLITE_TRANSIENT);
-
-        
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        found_db_id = sqlite3_column_int64(stmt, 0);
-        lookup_cache[target_id] = found_db_id;
-    }
-    sqlite3_reset(stmt);
-    */
+  
     return found_db_id;
 }
 uint32_t RC4Registry::register_transponder(uint64_t timestamp,uint32_t transponder_id) {
@@ -152,7 +142,7 @@ uint32_t RC4Registry::register_transponder(uint64_t timestamp,uint32_t transpond
         rc4_ids[rc4_i][0]=transponder_id;
         if(rc4_i < 999) rc4_i++;
     }
-    if(pre_time !=0 && timestamp - start_time > 15000){
+    if(pre_time !=0 && timestamp - start_time > 10000){
         save_to_db();
         clear();
         return transponder_id;
