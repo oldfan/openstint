@@ -17,8 +17,6 @@ static const std::vector<float> smoothing_fir = {
     0.01320163f, 0.00000000f
 };
 
-static const std::vector<float> peakdetect_fir = { 0.25f, -0.5f, 0.25f };
-
 uint64_t timecode_to_usec(uint64_t timecode) {
     return timecode * 1000000ul / SAMPLE_RATE;
 }
@@ -285,11 +283,11 @@ PassingPoint compute_passing_point(const std::deque<Detection>& detections) {
     const auto [y_uniform, tc_start, tc_duration] = resamp_uniform(detections);
     // if the transponder was placed paralel to the detection antenna, and the antenna was close,
     // there are two nulls right when the transponder passed over the loop wires
-    auto y_peaking = filtfilt(peakdetect_fir, y_uniform);
-    std::transform(y_peaking.begin(), y_peaking.end(), y_peaking.begin(), std::negate<float>{});
-    auto rssi_dips = find_peaks(y_peaking, 2.0f /* prominence in dB */);
-    if (rssi_dips.size() == 2) {
-        auto pass_duration = (rssi_dips[1].index - rssi_dips[0].index) * tc_duration / 128ul;
+    std::vector<float> y_peaking(129);
+    std::transform(y_uniform.begin(), y_uniform.end(), y_peaking.begin(), std::negate<float>{});
+    auto rssi_dips = find_peaks(y_peaking, 3.0f /* prominence in dB */);
+    if (rssi_dips.size() == 3) {
+        auto pass_duration = (rssi_dips[2].index - rssi_dips[0].index) * tc_duration / 128ul;
         auto pass_timecode = tc_start + rssi_dips[0].index*tc_duration/128ul + pass_duration/2;
         return {
             timecode_to_usec(pass_timecode),
