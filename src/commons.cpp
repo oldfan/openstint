@@ -70,7 +70,7 @@ bool process_frame(Frame* frame) {
 }
 
 void detect_frames(const std::complex<int8_t>* samples, std::size_t sample_count) {
-    const uint64_t timestamp = duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count();
+    const uint64_t timestamp = duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count() - startup_ts;
 
     bool frame_detected = false;
     for (uint32_t idx=0; (idx+SAMPLES_PER_SYMBOL)<=sample_count; idx+=SAMPLES_PER_SYMBOL) {
@@ -81,7 +81,7 @@ void detect_frames(const std::complex<int8_t>* samples, std::size_t sample_count
                 frame_detected = true; // do not use this buffer for noisefloor calculation
                 frame = Frame(
                     detected.value(),
-                    timestamp - startup_ts + microseconds(idx * 1000000ul / SAMPLE_RATE).count(),
+                    timestamp + (idx * 1000000ul / SAMPLE_RATE),
                     timecode + idx
                 );
                 symbol_reader.read_preamble(&frame, frame_detector.dc_offset(), samples, idx+SAMPLES_PER_SYMBOL);
