@@ -101,34 +101,29 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "rtlsdr_open() failed: %d\n", result);
         return EXIT_FAILURE;
     }
-    
-    // --- Updated detection logic for cross-platform compatibility ---
 
     bool is_v4 = false;
     char manufact[256] = {0}, product[256] = {0}, sn[256] = {0};
-
     // 1. Attempt to retrieve USB strings. 
     // Note: On Windows, calling rtlsdr_get_usb_strings(device, ...) after rtlsdr_open 
     // is more reliable than using the device index before opening.
     if (rtlsdr_get_usb_strings(device, manufact, product, sn) == 0) {
-        if (std::strstr(product, "V4") != nullptr) {
-            is_v4 = true;
-        }
+        is_v4 = (std::strstr(product, "V4") != nullptr);
         std::printf("RTL-SDR: %s (SN: %s)\n", product, sn);
     } else {
         // Fallback: If USB string retrieval fails, identify by device index name
         const char* name = rtlsdr_get_device_name(device_index);
-        std::printf("RTL-SDR: %s (Warning: Unable to retrieve USB strings)\n", name);
+        std::printf("RTL-SDR: %s\n", name);
     }
 
     // 2. Hardware-level verification via Tuner Type.
     // RTL-SDR Blog V4 uses the R828D tuner, whereas V3 typically uses R820T2.
     // This is the most robust detection method if USB descriptors are blocked by drivers.
-    enum rtlsdr_tuner tuner_type = rtlsdr_get_tuner_type(device);
-    if (tuner_type == RTLSDR_TUNER_R828D) {
-        if (!is_v4) {
+    if (!is_v4) {
+        enum rtlsdr_tuner tuner_type = rtlsdr_get_tuner_type(device);
+        is_v4 = (tuner_type == RTLSDR_TUNER_R828D);
+        if (is_v4) {
             std::printf("RTL-SDR Blog V4 detected via Tuner Type (R828D)\n");
-            is_v4 = true;
         }
     }
 
@@ -145,8 +140,6 @@ int main(int argc, char** argv) {
             goto cleanup;
         }
     }
-
-    // --- End of detection logic ---
 
     // set center frequency
     result = rtlsdr_set_center_freq(device, freq_hz);
