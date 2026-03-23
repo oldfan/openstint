@@ -3,10 +3,10 @@
 #include <iostream>
 #include <sstream>
 
-// 保持原有的全域 vector
+
 std::vector<std::vector<uint32_t>> rc4_ids(1000, std::vector<uint32_t>(2, 1));
 
-// 全域實體
+
 RC4Registry g_rc4_registry;
 
 RC4Registry::RC4Registry() {
