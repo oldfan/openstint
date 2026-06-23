@@ -28,4 +28,3 @@ public:
     bool reporting_due(uint64_t current_timestamp);
     std::string to_string();
 };
-
