@@ -22,18 +22,29 @@ set(OPENSTINT_BASE_SOURCES
     passing.cpp
     counters.cpp
     commons.cpp
+    capture.cpp
     rc4_registry.cpp
+    crash_handler.cpp
 )
 
 # Required dependencies
 find_path(LIQUID_INCLUDE_DIR NAMES liquid/liquid.h)
 find_library(LIQUID_LIB REQUIRED NAMES liquid liquid-dsp)
 
+# 新增：補上 FFTW3f 與 FFTW3 的尋找機制
+find_library(FFTW3F_LIB NAMES fftw3f REQUIRED)
+find_library(FFTW3_LIB NAMES fftw3 REQUIRED)
+
 find_path(FEC_INCLUDE_DIR NAMES fec.h)
 find_library(FEC_LIB REQUIRED NAMES fec)
 
 find_package(cppzmq REQUIRED)
 find_library(SQLITE3_LIB NAMES sqlite3 REQUIRED)
+
+# 如果是 Windows 環境，準備好 dbghelp 系統庫
+if(WIN32)
+    find_library(DBGHELP_LIB NAMES dbghelp REQUIRED)
+endif()
 
 if(USE_HACKRF)
     find_path(HACKRF_INCLUDE_DIR NAMES libhackrf/hackrf.h)
@@ -43,15 +54,24 @@ if(USE_HACKRF)
     target_compile_definitions(openstint_hackrf PRIVATE SAMPLES_PER_SYMBOL=${SAMPLES_PER_SYMBOL})
     target_compile_options(openstint_hackrf PRIVATE -I ".")
     target_include_directories(openstint_hackrf PRIVATE ${LIQUID_INCLUDE_DIR} ${HACKRF_INCLUDE_DIR} ${cppzmq_INCLUDE_DIR} ${FEC_INCLUDE_DIR})
+    
+    # 調整後的連結順序
     target_link_libraries(openstint_hackrf
-      ${LIQUID_LIB}
-      ${FFTW3F_LIB}
+      PRIVATE
+      ${LIQUID_LIB}       # 依賴項在前
       ${HACKRF_LIB}
       ${FEC_LIB}
       ${SQLITE3_LIB}
       cppzmq
+      ${FFTW3F_LIB}       # 被 liquid 依賴的庫必須擺在後面
+      ${FFTW3_LIB}
       m
     )
+    
+    # 如果是 Windows 額外補上 dbghelp
+    if(WIN32)
+        target_link_libraries(openstint_hackrf PRIVATE ${DBGHELP_LIB})
+    endif()
 endif()
 
 if(USE_RTLSDR)
@@ -62,13 +82,22 @@ if(USE_RTLSDR)
     target_compile_definitions(openstint_rtlsdr PRIVATE SAMPLES_PER_SYMBOL=2)
     target_compile_options(openstint_rtlsdr PRIVATE -I ".")
     target_include_directories(openstint_rtlsdr PRIVATE ${LIQUID_INCLUDE_DIR} ${RTLSDR_INCLUDE_DIR} ${cppzmq_INCLUDE_DIR} ${FEC_INCLUDE_DIR})
+    
+    # 調整後的連結順序
     target_link_libraries(openstint_rtlsdr
-      ${LIQUID_LIB}
-      ${FFTW3F_LIB}
+      PRIVATE
+      ${LIQUID_LIB}       
       ${RTLSDR_LIB}
       ${FEC_LIB}
       ${SQLITE3_LIB}
       cppzmq
+      ${FFTW3F_LIB}       
+      ${FFTW3_LIB}
       m
     )
+    
+    
+    if(WIN32)
+        target_link_libraries(openstint_rtlsdr PRIVATE ${DBGHELP_LIB})
+    endif()
 endif()
