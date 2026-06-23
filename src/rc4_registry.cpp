@@ -3,10 +3,10 @@
 #include <iostream>
 #include <sstream>
 
-
+// 保持原有的全域 vector
 std::vector<std::vector<uint32_t>> rc4_ids(1000, std::vector<uint32_t>(2, 1));
 
-
+// 全域實體
 RC4Registry g_rc4_registry;
 
 RC4Registry::RC4Registry() {
@@ -14,7 +14,7 @@ RC4Registry::RC4Registry() {
 }
 
 RC4Registry::~RC4Registry() {
-
+    // 程式結束前最後同步一次回硬碟，並關閉連線
     if (db_mem && db_disk) {
         sync_db(db_mem, db_disk);
     }
@@ -35,7 +35,7 @@ int RC4Registry::sync_db(sqlite3* src, sqlite3* dest) {
 void RC4Registry::init_db() {
     char* err_msg = 0;
 
-
+    // 1. 開啟硬碟資料庫
     if (sqlite3_open("openstint_rc4.db", &db_disk) != SQLITE_OK) {
         std::cerr << "Open disk DB failed: " << sqlite3_errmsg(db_disk) << std::endl;
         return;
@@ -47,10 +47,10 @@ void RC4Registry::init_db() {
         return;
     }
 
-    
+    // 3. 初始同步：將硬碟內容載入記憶體
     sync_db(db_disk, db_mem);
 
-  
+    // 4. 在記憶體資料庫中建立 Table 與 Trigger (若不存在)
     const char* init_sql = 
         "CREATE TABLE IF NOT EXISTS transponder_rc4 ("
         "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -89,7 +89,7 @@ uint64_t RC4Registry::save_to_db() {
     std::string final_ids = ss.str();
     if (final_ids.empty()) return 0;
 
- 
+    // 寫入記憶體資料庫
     std::string sql = "INSERT INTO transponder_rc4 (rc4_ids) VALUES ('" + final_ids + "');";
     char* err_msg = 0;
     uint64_t new_id = 0;
@@ -97,7 +97,7 @@ uint64_t RC4Registry::save_to_db() {
     if (sqlite3_exec(db_mem, sql.c_str(), 0, 0, &err_msg) == SQLITE_OK) {
         new_id = sqlite3_last_insert_rowid(db_mem);
         
-    
+        // --- 核心同步：更新記憶體後回存硬碟 ---
         sync_db(db_mem, db_disk);
         
         std::cout << "Data saved & synced, ID: " << new_id << std::endl;
@@ -108,13 +108,14 @@ uint64_t RC4Registry::save_to_db() {
     return new_id;
 }
 
-
+// 修改 Callback 資料結構
 struct QueryResult {
     std::string transponder_id;
     bool found = false;
 };
 
 static int my_callback(void* data, int argc, char** argv, char** azColName) {
+    (void)azColName;
     QueryResult* res = static_cast<QueryResult*>(data);
     if (argc > 0 && argv[0]) {
         res->transponder_id = argv[0]; 
@@ -127,7 +128,7 @@ uint64_t RC4Registry::find_id_by_transponder(uint64_t target_id) {
     QueryResult result;
     uint64_t found_db_id = 0;
 
-   
+    // 對記憶體資料庫進行查詢
     std::string sql = "SELECT transponder_id FROM transponder_rc4 WHERE rc4_ids LIKE '%" 
                       + std::to_string(target_id) 
                       + "%' LIMIT 1;";
@@ -140,14 +141,20 @@ uint64_t RC4Registry::find_id_by_transponder(uint64_t target_id) {
     return found_db_id;
 }
 
-
+// 以下 register_transponder, clear, sort_by_rc4_ids 邏輯保持不變
 uint32_t RC4Registry::register_transponder(uint64_t timestamp, uint32_t transponder_id) {
     uint64_t id = find_id_by_transponder(transponder_id);
     if (id != 0) {
         clear();
         return (uint32_t)id; 
     }
-    if (pre_time != 0 && timestamp - pre_time > 1000) {
+    uint32_t tmp=0;
+    if (timestamp >= pre_time) {
+        tmp = timestamp - pre_time;
+    } 
+
+    
+    if (pre_time != 0 && tmp > 40000) {
         clear();
         return 0;
     }     
@@ -165,7 +172,14 @@ uint32_t RC4Registry::register_transponder(uint64_t timestamp, uint32_t transpon
         rc4_ids[rc4_i][1] = 1;
         if (rc4_i < 999) rc4_i++;
     }
-    if (pre_time != 0 && timestamp - start_time > 15000) {
+    tmp=0;
+    if (timestamp >= start_time) {
+        tmp=timestamp - start_time;
+    } 
+
+    
+    if (pre_time != 0 && tmp > 5000000) {
+
         save_to_db();
         clear();
         return transponder_id;
