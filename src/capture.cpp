@@ -1,74 +1,81 @@
-#pragma once
-
-#include <array>
+#include <chrono>
 #include <cstdint>
-#include <map>
-#include <set>
-#include <string>
-#include <string_view>
+#include <fstream>
+#include <iostream>
+#include <thread>
+#include <vector>
 
-enum class TransponderProtocol {
-    OpenStint, // openstint protocol
-    RC3,       // legacy protocol
-    RC4,       // newer MyLaps protocol
-};
-static constexpr int PREAMBLE_LENGTH = 16;
-// expand a 16-bit preamble word into its BPSK ±1 symbols (MSB first)
-constexpr std::array<float, PREAMBLE_LENGTH> preamble_symbols(uint16_t word) {
-    std::array<float, PREAMBLE_LENGTH> syms{};
-    for (int i = 0; i < PREAMBLE_LENGTH; i++) {
-        syms[i] = (word & (1 << (PREAMBLE_LENGTH - 1 - i))) ? +1.0f : -1.0f;
+#include "capture.hpp"
+#include "commons.hpp"
+
+
+// number of raw bytes (2 per IQ sample) read per chunk, matching the RTL-SDR
+// async read buffer so the processing loop sees familiar chunk sizes.
+static const size_t CHUNK_BYTES = 32768;
+
+void replay_capture(const std::vector<std::string>& files,
+                    double sample_rate,
+                    capture_callback_t cb,
+                    void* ctx,
+                    const std::atomic<bool>& do_exit) {
+    std::vector<uint8_t> read_buf(CHUNK_BYTES);
+
+    // one chunk worth of complex samples corresponds to this much real time,
+    // which we use to pace the replay to mimic a real-life capture.
+    using clock = std::chrono::steady_clock;
+    clock::time_point next_chunk = clock::now();
+
+    // build the list of streams to replay; an empty list means read stdin
+    std::vector<std::string> sources = files;
+    bool use_stdin = sources.empty();
+    if (use_stdin) {
+        sources.push_back("<stdin>");
     }
-    return syms;
-}
 
-// upsample the ±1 preamble to the sample rate (np.repeat(pre, sps))
-constexpr std::array<float, PREAMBLE_LENGTH * SAMPLES_PER_SYMBOL> preamble_upsampled(uint16_t word) {
-    std::array<float, PREAMBLE_LENGTH * SAMPLES_PER_SYMBOL> up{};
-    const auto syms = preamble_symbols(word);
-    for (int i = 0; i < PREAMBLE_LENGTH; i++) {
-        for (int s = 0; s < SAMPLES_PER_SYMBOL; s++) {
-            up[i * SAMPLES_PER_SYMBOL + s] = syms[i];
+    for (const std::string& source : sources) {
+        if (do_exit) {
+            break;
         }
+
+        std::ifstream file_in;
+        std::istream* in = &std::cin;
+        if (!use_stdin) {
+            file_in.open(source, std::ios::binary);
+            if (!file_in) {
+                std::cerr << "Failed to open '" << source << "'\n";
+                continue;
+            }
+            in = &file_in;
+        }
+
+        std::cout << "Replaying '" << source << "'\n";
+
+        while (!do_exit) {
+            in->read(reinterpret_cast<char*>(read_buf.data()), CHUNK_BYTES);
+            std::streamsize n_read = in->gcount();
+            if (n_read <= 0) {
+                break;
+            }
+
+            // each IQ sample is two bytes; drop a trailing odd byte if any
+            uint32_t byte_count = (static_cast<uint32_t>(n_read) / 2) * 2;
+            if (byte_count == 0) {
+                break;
+            }
+
+            // hand the raw chunk to the device-specific converter, then drain
+            // whatever frames it produced.
+            cb(read_buf.data(), byte_count, ctx);
+            report_detections();
+
+            uint32_t sample_count = byte_count / 2;
+            next_chunk += std::chrono::duration_cast<clock::duration>(
+                std::chrono::duration<double>(sample_count / sample_rate));
+            std::this_thread::sleep_until(next_chunk);
+        }
+
+        // give the pipeline a moment to flush, then emit the final report
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        report_detections();
     }
-    return up;
 }
-struct TransponderProps {
-    uint16_t dpsk_preamble;
-    uint16_t preamble;
-    std::size_t payload_size;
-    std::string_view prefix;
-    std::array<float, PREAMBLE_LENGTH> preamble_syms;
-    std::array<float, PREAMBLE_LENGTH * SAMPLES_PER_SYMBOL> preamble_up;
-};
-
-void init_transponders();
-int decode_openstint(const uint8_t *softbits, uint32_t *transponder_id);
-int decode_rc3(const uint8_t *softbits, uint32_t *transponder_id, uint8_t *status_code);
-int decode_rc4(const uint8_t *softbits, uint32_t *transponder_id,uint64_t timestamp);
-
-inline constexpr TransponderProps TRANSPONDER_PROPERTIES[] = {
-    {0x857c, 0xf9a8, 80, "OPN", preamble_symbols(0xf9a8), preamble_upsampled(0xf9a8)},
-    {0x7916, 0x51e4, 80, "RC3", preamble_symbols(0x51e4), preamble_upsampled(0x51e4)},
-    {0xc0ab, 0x80cd, 80, "RC4", preamble_symbols(0x80cd), preamble_upsampled(0x80cd)}
-};
-
-constexpr TransponderProps transponder_props(TransponderProtocol t) {
-    return TRANSPONDER_PROPERTIES[static_cast<int>(t)];
-}
-// Old AMBRc DP transponders send *transponder* frames with all status bits set;
-// unfortunately newer models can transmit RC3 status/validation messages the same way.
-// This builds a block-list for such transponders.
-//
-// For a given transponder, top 8 bits of status/validation messages are the same.
-// We do not report a passing unless there are at least 2 frames detected; we can
-// pass the problematic transponder_id through, then permanently ban it once a
-// status message with the same 8 MSB is detected within 250ms.
-class AmbRcBlacklist {
-    std::map<uint8_t, uint64_t> msb8_timestamps; // msb8 -> timestamp of latest validation message
-    std::set<uint32_t> banned_transponders;      // permanently banned transponder ids
-
-public:
-    void process(uint64_t timestamp, uint8_t status_code, uint32_t transponder_id);
-    bool check_banned(uint32_t transponder_id) const;
-};
