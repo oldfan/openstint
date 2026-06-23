@@ -13,20 +13,30 @@
 #define FRAME_MAX_SYMBOL_SPACE 128
 #define PREAMBLE_MAX_BIT_ERRORS 2
 #define STATS_UPDATE_THRESHOLD (1<<12)
-#define EQLMS_TRAINING_THRESHOLD 16.0f
+
+#define PREAMBLE_THRESHOLD 0.78f
+#define PREAMBLE_15BIT_PENALTY (15.0f/16.0f)
+
+// preamble matching
+static inline const Preamble<uint16_t> p_openstint(transponder_props(TransponderProtocol::OpenStint).dpsk_preamble, PREAMBLE_THRESHOLD*PREAMBLE_15BIT_PENALTY);
+static inline const Preamble<uint16_t> p_rc3(transponder_props(TransponderProtocol::RC3).dpsk_preamble, PREAMBLE_THRESHOLD*PREAMBLE_15BIT_PENALTY);
+static inline const Preamble<uint16_t> p_rc4(transponder_props(TransponderProtocol::RC4).dpsk_preamble, PREAMBLE_THRESHOLD);
+
 
 Frame::Frame() {
     preamble_size = payload_size = 0;
     softbits.reserve(FRAME_MAX_SYMBOL_SPACE);
     symbols.reserve(FRAME_MAX_SYMBOL_SPACE);
     timestamp = 0;
+    timecode = 0;
+    preamble_metric = 0;
 }
 
-Frame::Frame(TransponderType _ttype, uint64_t _ts)
-    : transponder_type(_ttype), timestamp(_ts) {
+Frame::Frame(TransponderProtocol _ttype, float _pm, uint64_t _ts, uint64_t _tc)
+    : transponder_protocol(_ttype), preamble_metric(_pm), timestamp(_ts), timecode(_tc) {
     softbits.reserve(FRAME_MAX_SYMBOL_SPACE);
     symbols.reserve(FRAME_MAX_SYMBOL_SPACE);
-    payload_size = transponder_props(transponder_type).payload_size;
+    payload_size = transponder_props(transponder_protocol).payload_size;
     preamble_size = 16;
 }
 
@@ -64,10 +74,10 @@ const uint8_t* Frame::bits() {
 
     // start-of-frame 32 bits contain the preamble
     uint32_t sof = concat_bits32(softbits.data());
-    int pos = preamble_pos(sof, transponder_props(transponder_type).bpsk_preamble);
+    int pos = preamble_pos(sof, transponder_props(transponder_protocol).preamble);
     if (pos < 0) {
         // try with bits inverted:
-        pos = preamble_pos(~sof, transponder_props(transponder_type).bpsk_preamble);
+        pos = preamble_pos(~sof, transponder_props(transponder_protocol).preamble);
         if (pos < 0) { // preamble not found
             return nullptr;
         } else { // preamble found, but BPSK does not know the correct phase
@@ -91,7 +101,7 @@ float Frame::rssi() const {
 }
 
 float Frame::evm() const {
-    return evm_sum / (payload_size + SymbolReader::filter_delay);
+    return evm_sum / (payload_size + preamble_size + SymbolReader::fseq_syms);
 }
 
 float Frame::symbol_magnitude() const {
@@ -114,36 +124,49 @@ std::ostream& operator <<(std::ostream& os, const Frame& f) {
         });
     std::stringstream sbits;
     std::copy(f.softbits.begin(), f.softbits.end(), std::ostream_iterator<int>(sbits, ", "));
-    return os << transponder_props(f.transponder_type).prefix
-              << " T:" << f.timestamp
+    return os << transponder_props(f.transponder_protocol).prefix
+              << " TS:" << (f.timestamp/1000)
+              << " TC:" << f.timecode
+              << " M:" << f.preamble_metric
               << " RSSI:" << f.rssi()
               << " EVM:" << f.evm()
-              << " FREQ:" << (f.frequency / (2.0f * 3.14) * 1250000.0f)
+              << " FREQ:" << (f.phase_per_symbol / (2.0f * 3.14) * 1250000.0f)
               << " MAG:" << f.symbol_magnitude()
-              << " SYMSYNC:[" << f.symsync_sym << "," << f.symsync_bank << "]"
               << " SYMBOLS:[" << ssym.str() << "]"
               << " SOFTBITS:[" << sbits.str() << "]";
 }
 
-FrameDetector::FrameDetector(float _threshold) : threshold(_threshold) {};
-
-std::optional<TransponderType> FrameDetector::process_baseband(const std::complex<int8_t> *samples) {
-    // remove dc-offset + calculate magninude^2 of each sample
-    std::complex<int8_t> sb[samples_per_symbol];
-    uint16_t mag2s[samples_per_symbol];
-    std::transform(
-        samples, samples + samples_per_symbol,
-        sb, [this](const std::complex<int8_t> s) { return s - this->offset; }
-    );
-    std::transform(
-        sb, sb + samples_per_symbol,
-        mag2s,
-        [](const std::complex<int8_t> s) { return std::norm(complex_cast<int16_t>(s)); }
-    );
-
-    // run SAMPLES_PER_SYMBOL circular buffers in parallel
+std::optional<DetectionResult> FrameDetector::process_baseband(const std::complex<int8_t> *samples) {
+    // Preamble detection works on differential-encoded signals;
+    // This is tolerant to larger frequency offsets.
+    // 
+    // To differentially demodulate: z[i] = r[i] * conj(r[i-1])
+    // In Euler-form, a received symbol is:
+    // r[t] = A*e^{j(φ+Δω)t}*c[t]
+    //   - c[t] ∈ {±1}
+    //   - c[t] = c[t-1]*a[t] (differential encoding, a[t] is the preabmble pre-encoding, ∈{±1})
+    //   - φ, Δω: carrier initial phase, per-symbol offset
+    // Note: unknow φ (receiver's local oscillator isn't phase-locked to the transmitter),
+    //       and Δω ≠ 0 because the two crystals never match exactly
+    // Note: a[t] = c[t]*c[t-1] (given the ∈{±1})
+    // 
+    // r[t] * r'[t-1] = (A*e^{j(φ+Δω)t}*c[t]) * (A*e^{-j(φ+Δω)(t-1)}*c[t-1])
+    //                = A^2 * e^{jΔω} * c[t] * c[t-1]
+    //                = A^2 * e^{jΔω} * a[t]
+    // For small Δω, e^{jΔω}~=1; the conjugate product cancels the (unknown) carrier phase
+    // and removes the per-symbol rotation from any frequency offset, leaving a practically
+    // real-valued ±|A|^2 sequence, that is the differentially-encoded preamble bit pattern.
+    std::complex<int32_t> r[samples_per_symbol];
     for (int i=0; i<samples_per_symbol; i++) {
-        buffers[i].push(sb[i], mag2s[i]);
+        r[i] = complex_cast<int32_t>(samples[i]) - offset;
+    }
+    for (int i=0; i<samples_per_symbol; i++) {
+        std::complex<int32_t> z = r[i] * std::conj(last_samples[i]);
+        int32_t zr = std::clamp(std::real(z), (int32_t)INT16_MIN, (int32_t)INT16_MAX);
+        buffers[i].push(static_cast<int16_t>(zr), zr*zr);
+    }
+    for (int i=0; i<samples_per_symbol; i++) {
+        last_samples[i] = r[i];
     }
 
     // select the best-looking buffer to compute preamble-match
@@ -155,22 +178,30 @@ std::optional<TransponderType> FrameDetector::process_baseband(const std::comple
 
     // update statistics (sample first element)
     s1 += samples[0];
-    s2 += mag2s[0];
+    s2 += std::norm(r[0]);
     n++;
     
-    // run matchers
-    if (buffers[idx].match_preamble(p_openstint) > threshold) {
-        return TransponderType::OpenStint;
+    if (buffers[idx].match_preamble(p_rc4)) {       
+        return {{ TransponderProtocol::RC4, buffers[idx].calc_metric(p_rc4) }};
     }
-    if (buffers[idx].match_preamble(p_legacy) > threshold) {
-        return TransponderType::Legacy;
-    }    
-    if (buffers[idx].match_preamble(p_rc4) > threshold) {       
-        return TransponderType::RC4;
+
+    // different manufacturers use different init sequence, DPSK first bit differs!
+    // depending on threshold, we could loose 25-50% of messages with the wrong preamble!
+    // fix: set msb to 0, sligthly lower threshold, match rc3 last to prevent early false-match
+    buffers[idx].clear_next(); // do not use MSB for matching
+
+    // v1 transponder use the correct init sequence (-1 -1 -1 -1)
+    // v2-beta used incorrect; to keep those tranponders alive, match on 15 bits only
+    // new transpoders are fixed, this affects ~5 team/people
+    if (buffers[idx].match_preamble(p_openstint)) {
+        return {{ TransponderProtocol::OpenStint, buffers[idx].calc_metric(p_openstint) }};
     }
-    
-        
-    
+
+    // - AmbRC/RCHG/MRT use 0xF916 dpsk preamble
+    // - RC4Hybrid use 0x7916
+    if (buffers[idx].match_preamble(p_rc3)) {
+        return {{ TransponderProtocol::RC3, buffers[idx].calc_metric(p_rc3) }};
+    }
     return std::nullopt;
 }
 
@@ -209,151 +240,172 @@ std::complex<float> FrameDetector::dc_offset() const {
 }
 
 SymbolReader::SymbolReader() {
-    sym_pfb = firpfb_crcf_create_default(num_filters, filter_delay);
-    sym_eq = eqlms_cccf_create(NULL, 3); // a very quick EQ
-    eqlms_cccf_set_bw(sym_eq, 1.0f/64);
+    std::complex<float> h[fseq_syms * samples_per_symbol] = {0};
+    sym_eq = eqlms_cccf_create(h, fseq_syms * samples_per_symbol);
+    // sym_eq = eqlms_cccf_create_lowpass(fseq_syms * samples_per_symbol, 0.5f);
     bpsk_modem = modemcf_create(LIQUID_MODEM_BPSK);
 }
 
 SymbolReader::~SymbolReader() {
-    firpfb_crcf_destroy(sym_pfb);
     eqlms_cccf_destroy(sym_eq);
     modemcf_destroy(bpsk_modem);
 }
 
-void SymbolReader::read_single(Frame *frame, const std::complex<float> offset, const std::complex<int8_t> *src) {
-    // convert i8 to f32
-    std::complex<float> bf[samples_per_symbol];
-    for (int i=0; i<samples_per_symbol; ++i) { // something like vcvt_s32_f32
-        bf[i] = complex_cast<float>(src[i]) - offset;
+template <int N>
+float window_energy(const std::complex<float> x[]) {
+    float acc = {0};
+    for (int i=0; i<N; i++) {
+        acc += std::norm(x[i]);
     }
-    // sample the symbol (symbol sync)
-    for (int i=0; i<samples_per_symbol; i++) {
-        firpfb_crcf_push(sym_pfb, bf[i]);
-        if (i == frame->symsync_sym) {
-            std::complex<float> symbol;
-            firpfb_crcf_execute(sym_pfb, frame->symsync_bank, &symbol);
-
-            symbol *= frame->correction;
-            costas_tune_correction(frame, symbol);
-
-            // equalization
-            eqlms_cccf_push(sym_eq, symbol);
-            eqlms_cccf_execute(sym_eq, &symbol);
-
-            // demodulate
-            unsigned int bit; // bit-level decoding
-            uint8_t soft_bit; // how likely the symbol is
-            modemcf_demodulate_soft(bpsk_modem, symbol, &bit, &soft_bit);
-            frame->softbits.push_back(soft_bit);
-            frame->symbols.push_back(symbol);
-            frame->evm_sum += modemcf_get_demodulator_evm(bpsk_modem);
-        }
-    }
+    return acc;
 }
 
-void SymbolReader::read_preamble_symbol(std::complex<float> *dst, std::complex<float> symbol) {
-    std::complex<float> s;
-    firpfb_crcf_push(sym_pfb, symbol);
-    for (unsigned int l=0; l<num_filters; l++) {
-        firpfb_crcf_execute(sym_pfb, l, &s);
-        dst[l] = s;
-    }
-}
+void SymbolReader::train_preamble(Frame *frame, const std::complex<int8_t> *src, int end, std::complex<float> dc_offset) {
+    // load from SDR buffer to an internal one
+    load_preamble_buffer(src, end, dc_offset);
 
-void SymbolReader::train_preamble(Frame *frame, std::complex<float> offset, const std::complex<int8_t> *src, int end) {
-    const int sample_count = preamble_length * samples_per_symbol;
-    const int resampled_size = preamble_length * 16; // resample to 16 samples/symbol
-    std::complex<float> resampled[resampled_size];
+    // setup AGC based on preamble
+    frame->symbol_scale = 1.41f / std::sqrt(window_energy<preamble_buffer_size>(preamble_buffer)/static_cast<float>(preamble_symbol_count));
 
-    // read symbols to resampled buffer
-    for (int i=0; i<sample_count; i++) {
-        int sample_idx = end - sample_count + i;
-        if (sample_idx < 0) {
-            sample_idx += reserve_buffer_size;
-            std::complex<float> symbol = complex_cast<float>(reserve_buffer[sample_idx]) - offset;
-            read_preamble_symbol(resampled + i*num_filters, symbol);
-        } else {
-            std::complex<float> symbol = complex_cast<float>(src[sample_idx]) - offset;
-            read_preamble_symbol(resampled + i*num_filters, symbol);
-        }
+    // the preamble starts after the fseq_halflen lead symbols reserved for the EQ
+    auto [phase0, phase_per_symbol] = estimate_phase_freq(frame, 2 /*shift*/);
+    frame->phase = phase0 - phase_per_symbol*fseq_halflen; // set to init sequence
+    frame->phase_per_symbol = phase_per_symbol;
+
+    // scale & rotate buffer (do it once, so EQ training is faster)
+    for (int i=0; i<preamble_buffer_size; i++) {
+        float k = static_cast<float>(i) / samples_per_symbol - static_cast<float>(fseq_halflen);
+        preamble_buffer[i] *= std::polar(frame->symbol_scale, -k*phase_per_symbol - phase0);
     }
     
-    // find best sampling point (where sample magnitude is max):
-    // process (preamble_length - filter_delay) symbols (typ. 12)
-    float preamble_magnitudes[16] = {0};
-    for (int i=(filter_delay*16); i<resampled_size; i++) {
-        preamble_magnitudes[i%16] += std::norm(resampled[i]);
-    }
-    auto max_magnitude = std::max_element(preamble_magnitudes, preamble_magnitudes + 16);
-    int sampling_point = std::distance(preamble_magnitudes, max_magnitude);
+    // train EQ filter
+    eqlms_cccf_reset(sym_eq); // reset the original parameters
+    train_fseq(frame, eq_mu_train*3.0f);
+    train_fseq(frame, eq_mu_train);
+    train_fseq(frame, eq_mu_train);
 
-    // find symbol phase
-    std::complex<float> rotated2x0 = {0}, rotated2x1 = {0};
-    for (int i=filter_delay; i<preamble_length; i++) {
-        auto sampled_symbol = resampled[i*16 + sampling_point];
-        auto rr = (sampled_symbol*sampled_symbol);
-        // collect phases for first and second halves separately (for frequency offset guesstimation):
-        if (i < (preamble_length+filter_delay)/2) {
-            rotated2x0 += rr;
+    // normal operation
+    eqlms_cccf_set_bw(sym_eq, eq_mu_track);
+}
+
+void SymbolReader::load_preamble_buffer(const std::complex<int8_t> *src, int end, std::complex<float> dc_offset) {
+    // read symbols to resampled buffer
+    for (int i=0; i<preamble_buffer_size; i++) {
+        int sample_idx = end - preamble_buffer_size + i;
+        if (sample_idx < 0) {
+            // do not read before the current buffer, use the reserve from the previous
+            sample_idx += reserve_buffer_size;
+            preamble_buffer[i] = complex_cast<float>(reserve_buffer[sample_idx]) - dc_offset;
         } else {
-            rotated2x1 += rr;
+            preamble_buffer[i] = complex_cast<float>(src[sample_idx]) - dc_offset;
         }
-    }
-
-    // update frame
-    frame->symsync_sym = sampling_point / num_filters;
-    frame->symsync_bank = sampling_point % num_filters;
-    frame->symbol_scale = 1.0f / std::sqrt((*max_magnitude) / static_cast<float>(preamble_length));
-    frame->phase = std::arg(rotated2x0 + rotated2x1) / 2.0f;
-    frame->correction = std::polar(frame->symbol_scale, -frame->phase);
-    // frequency offset estimation: average the phase of first and second half of the preamble,
-    // and find the angle between the two averages. The arg(z0*conj(z1)) is a "known trick" to find
-    // the angle. Since it's BPSK, we use the arg(z*z)/2 to have both symbols in a single point.
-    // There is (preamble_length-filter_delay)/2 time between the two averages, 2/2 cancels out.
-    frame->frequency = std::arg(rotated2x1 * std::conj(rotated2x0)) / (preamble_length - filter_delay);
-
-    // train EQ on preamble
-    if ((1.0f / frame->symbol_scale) > EQLMS_TRAINING_THRESHOLD) {
-        for (int i=0; i<preamble_length; i++) {
-            std::complex<float> symbol = resampled[i*16 + sampling_point] * frame->correction;
-            std::complex<float> d_hat, d_prime;
-            unsigned int bit; // bit-level decoding
-
-            eqlms_cccf_push(sym_eq, symbol);
-            if (i >= filter_delay) {
-                eqlms_cccf_execute(sym_eq, &d_hat);
-                modemcf_demodulate(bpsk_modem, d_hat, &bit);
-                modemcf_get_demodulator_sample(bpsk_modem, &d_prime);
-                eqlms_cccf_step(sym_eq, d_prime, d_hat);
-            }
-        }
-    }
-
-    // read preamble to frame (with initial filter response)
-    for (int i=0; i<preamble_length; i++) {
-        std::complex<float> symbol = resampled[i*16 + sampling_point] * frame->correction;
-        costas_tune_correction(frame, symbol);
-
-        // run EQ:
-        eqlms_cccf_push(sym_eq, symbol);
-        eqlms_cccf_execute(sym_eq, &symbol);
-
-        // demodulate:
-        unsigned int bit; // bit-level decoding
-        uint8_t soft_bit; // how likely the symbol is
-        modemcf_demodulate_soft(bpsk_modem, symbol, &bit, &soft_bit);
-        frame->softbits.push_back(soft_bit);
-        frame->symbols.push_back(symbol);
     }
 }
 
-void SymbolReader::read_preamble(Frame *dst, std::complex<float> offset, const std::complex<int8_t> *src, int end) {
-    firpfb_crcf_reset(sym_pfb);
-    modem_reset(bpsk_modem);
+std::pair<float, float> SymbolReader::estimate_phase_freq(Frame *frame, int shift) {
+    const int n = preamble_length * samples_per_symbol;
+    const int start = fseq_halflen * samples_per_symbol;
+    const auto &preamble_up = transponder_props(frame->transponder_protocol).preamble_up;
 
-    // find optimal sampling point, AGC scale and BPSK stating phase
-    train_preamble(dst, offset, src, end);
+    // y = sample-spaced preamble with the BPSK (±1) modulation stripped off
+    // multiply by known preamble rotates symbols to a single point (per sample/phase)
+    std::complex<float> y[n];
+    for (int i=0; i<n; i++) {
+        y[i] = preamble_buffer[start + i] * preamble_up[i];
+    }
+
+    // frequency estimate: angle of the lag-(samples_per_symbol*shift) autocorrelation, per symbol
+    std::complex<float> acc = {0.0f, 0.0f};
+    for (int i=samples_per_symbol*shift; i<n; i++) {
+        acc += y[i] * std::conj(y[i - samples_per_symbol*shift]);
+    }
+    float dphi = std::arg(acc) / static_cast<float>(shift); // rad / symbol
+
+    // phase at 'start': derotate by the estimated frequency, then take the overall angle
+    std::complex<float> psum = {0.0f, 0.0f};
+    for (int i=0; i<n; i++) {
+        float k = static_cast<float>(i) / samples_per_symbol;
+        psum += y[i] * std::polar(1.0f, -k * dphi);
+    }
+    float ph0 = std::arg(psum);
+
+    return {ph0, dphi};
+}
+
+void SymbolReader::train_fseq(Frame *frame, float mu) {
+    const auto &preamble_syms = transponder_props(frame->transponder_protocol).preamble_syms;
+
+    // set the LMS learning rate for this epoch
+    eqlms_cccf_set_bw(sym_eq, mu);
+
+    // prime the filter with a full window (fseq_syms symbols): fseq_halflen lead +
+    // the first preamble symbol + fseq_halflen trailing, so the first execute()
+    // output is centered on the first known preamble symbol
+    int idx = 0;
+    for (int i=0; i<fseq_syms * samples_per_symbol; i++) {
+        eqlms_cccf_push(sym_eq, preamble_buffer[idx++]);
+    }
+
+    // from here on, advance one symbol (all samples_per_symbol samples) at a time,
+    // equalize, and train towards the known preamble symbol; the window stays
+    // centered on the symbol being trained
+    for (int s=0; s<preamble_length; s++) {
+        if (s > 0) {
+            for (int j=0; j<samples_per_symbol; j++) {
+                eqlms_cccf_push(sym_eq, preamble_buffer[idx++]);
+            }
+        }
+        std::complex<float> d_hat;
+        eqlms_cccf_execute(sym_eq, &d_hat);
+        eqlms_cccf_step(sym_eq, preamble_syms[s], d_hat);
+    }
+}
+
+void SymbolReader::read_preamble(Frame *frame, const std::complex<int8_t> *src, int end, std::complex<float> dc_offset) {
+    // read preamble as regular data
+    const int sample_count = preamble_symbol_count * samples_per_symbol;
+    for (int i=0; i<preamble_symbol_count; i++) {
+        int sample_idx = end - sample_count + i*samples_per_symbol;
+        if (sample_idx < 0) {
+            // do not read before the current buffer, use the reserve from the previous
+            sample_idx += reserve_buffer_size;
+            read_symbol(frame, reserve_buffer+sample_idx, dc_offset);
+        } else {
+            read_symbol(frame, src+sample_idx, dc_offset);
+        }
+    }
+}
+
+void SymbolReader::read_symbol(Frame *frame, const std::complex<int8_t> *src, std::complex<float> dc_offset) {
+    // scale & derotate this symbol's samples (same normalization the EQ was
+    // trained with): the carrier phase advances by phase_per_symbol/samples_per_symbol
+    // for every sample. Then feed them to the fractionally-spaced equalizer.
+    const float phase_step = frame->phase_per_symbol / samples_per_symbol;
+    for (int i=0; i<samples_per_symbol; i++) {
+        std::complex<float> correction = std::polar(frame->symbol_scale, -(frame->phase + i*phase_step));
+        std::complex<float> sample = (complex_cast<float>(src[i]) - dc_offset) * correction;
+        eqlms_cccf_push(sym_eq, sample);
+    }
+
+    // downsample: the EQ produces one equalized symbol per samples_per_symbol
+    std::complex<float> symbol;
+    eqlms_cccf_execute(sym_eq, &symbol);
+
+    // closed-loop carrier tracking on the equalized symbol
+    costas_tune_correction(frame, symbol);
+
+    // soft demodulate and store
+    unsigned int bit; // bit-level decoding
+    uint8_t soft_bit; // how likely the symbol is
+    modemcf_demodulate_soft(bpsk_modem, symbol, &bit, &soft_bit);
+    frame->softbits.push_back(soft_bit);
+    frame->symbols.push_back(symbol);
+    frame->evm_sum += modemcf_get_demodulator_evm(bpsk_modem);
+
+    // decision-directed (blind) EQ update toward the demodulated symbol
+    std::complex<float> d_prime;
+    modemcf_get_demodulator_sample(bpsk_modem, &d_prime);
+    eqlms_cccf_step(sym_eq, d_prime, symbol);
 }
 
 void SymbolReader::update_reserve_buffer(const std::complex<int8_t> *src, int end) {
@@ -364,23 +416,15 @@ void SymbolReader::update_reserve_buffer(const std::complex<int8_t> *src, int en
     );
 }
 
-void SymbolReader::read_symbol(Frame *dst, std::complex<float> offset, const std::complex<int8_t> *src) {
-    read_single(dst, offset, src);
-}
-
 bool SymbolReader::is_frame_complete(const Frame *f) {
     // we read the preamble + -1th bit to initialize differential-BPSK demodulation
     // payload, obviously
     // the symbol-sync's filters has their own delay
-    return f->softbits.size() > (f->preamble_size + f->payload_size + filter_delay);
+    return f->softbits.size() > (f->preamble_size + f->payload_size + fseq_syms);
 }
 
 void SymbolReader::costas_tune_correction(Frame *frame, std::complex<float> symbol) {
     float error = std::arg(symbol*symbol) / 2.0f; // phase; slower than real*imag, but much better
-    frame->frequency += 0.0025f * error;
-    frame->phase += frame->frequency + 0.05f * error;
-    frame->correction = std::polar(
-        frame->symbol_scale,
-        -(frame->phase)
-    );
+    frame->phase_per_symbol += costas_i * error;
+    frame->phase += frame->phase_per_symbol + costas_p * error;
 }
