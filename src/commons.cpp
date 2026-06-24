@@ -189,8 +189,9 @@ bool parse_common_arguments(int& i, const int argc, const std::string& arg, char
 }
 
 void init_commons() {
+    #ifdef _WIN32
     install_crash_handler();
-
+    #endif
     // transponder processing (allocate viterbi trellis); TODO RAII
     init_transponders();
 
